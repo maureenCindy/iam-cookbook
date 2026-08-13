@@ -1,0 +1,35 @@
+version: 2
+
+# Directory globs (`/*/backend`, `/*/web`) auto-cover every recipe as it lands,
+# so this config never changes when a recipe is added. Updates are grouped so
+# each ecosystem opens one PR per run, not a swarm — and every PR still has to
+# pass the `CI Gate` before it can merge.
+updates:
+  # The CI actions themselves.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Every recipe's Spring Boot backend.
+  - package-ecosystem: gradle
+    directories:
+      - "/*/backend"
+    schedule:
+      interval: weekly
+    groups:
+      backend-deps:
+        patterns: ["*"]
+
+  # Every recipe's React frontend.
+  - package-ecosystem: npm
+    directories:
+      - "/*/web"
+    schedule:
+      interval: weekly
+    groups:
+      web-deps:
+        patterns: ["*"]
