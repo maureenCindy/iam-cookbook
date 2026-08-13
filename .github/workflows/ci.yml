@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Coordinates guard (published artifacts only)
         run: |
@@ -68,7 +68,7 @@ jobs:
       backends: ${{ steps.set.outputs.backends }}
       webs: ${{ steps.set.outputs.webs }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: set
         run: |
           shopt -s nullglob
@@ -92,12 +92,12 @@ jobs:
       matrix:
         recipe: ${{ fromJson(needs.discover.outputs.backends) }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       # ubuntu-latest ships Docker, so Testcontainers-backed recipe tests just run.
       - run: ./gradlew test --no-daemon
         working-directory: ${{ matrix.recipe }}/backend
@@ -113,8 +113,8 @@ jobs:
       matrix:
         recipe: ${{ fromJson(needs.discover.outputs.webs) }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
       - run: npm ci
