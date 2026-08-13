@@ -1,0 +1,151 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Least privilege: CI only reads the repo.
+permissions:
+  contents: read
+
+# Don't burn minutes on superseded pushes to the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Always-on gate. Enforces the repo's invariants even before any recipe has
+  # source: recipes may only consume PUBLISHED artifacts, and each must be a
+  # well-formed directory.
+  # ---------------------------------------------------------------------------
+  validate:
+    name: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Coordinates guard (published artifacts only)
+        run: |
+          fail=0
+          if grep -rnE 'mavenLocal\(' --include='*.gradle' --include='*.gradle.kts' .; then
+            echo "::error::mavenLocal() found — recipes must resolve IAM from Maven Central"; fail=1
+          fi
+          if grep -rnE '"@mpofusindie/iam-react"[[:space:]]*:[[:space:]]*"(file:|[^"]*\.tgz)' --include='package.json' .; then
+            echo "::error::local iam-react tarball found — use the npm registry version"; fail=1
+          fi
+          [ "$fail" = 0 ] && echo "coordinates OK"
+          exit $fail
+
+      - name: Structure lint (every recipe has a README)
+        run: |
+          shopt -s nullglob
+          missing=0
+          for d in [0-9][0-9]-*/; do
+            [ -f "${d}README.md" ] || { echo "::error::${d} has no README.md"; missing=1; }
+          done
+          [ "$missing" = 0 ] && echo "structure OK"
+          exit $missing
+
+      - name: Markdown links (relative, offline — deterministic)
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --no-progress --offline "./**/*.md"
+          fail: true
+
+  # ---------------------------------------------------------------------------
+  # Emit a matrix of ONLY the recipes that actually carry buildable source, so
+  # CI cost is O(recipes with code), not O(all recipes). Empty today.
+  # ---------------------------------------------------------------------------
+  discover:
+    name: discover recipes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      backends: ${{ steps.set.outputs.backends }}
+      webs: ${{ steps.set.outputs.webs }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: set
+        run: |
+          shopt -s nullglob
+          backends=$(for d in [0-9][0-9]-*/backend; do [ -f "$d/build.gradle.kts" ] && dirname "$d"; done \
+            | jq -R . | jq -sc 'map(select(length > 0))')
+          webs=$(for d in [0-9][0-9]-*/web; do [ -f "$d/package.json" ] && dirname "$d"; done \
+            | jq -R . | jq -sc 'map(select(length > 0))')
+          echo "backends=$backends" >> "$GITHUB_OUTPUT"
+          echo "webs=$webs" >> "$GITHUB_OUTPUT"
+          echo "backends: $backends"
+          echo "webs: $webs"
+
+  backend:
+    name: backend (${{ matrix.recipe }})
+    needs: discover
+    if: ${{ needs.discover.outputs.backends != '[]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        recipe: ${{ fromJson(needs.discover.outputs.backends) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      # ubuntu-latest ships Docker, so Testcontainers-backed recipe tests just run.
+      - run: ./gradlew test --no-daemon
+        working-directory: ${{ matrix.recipe }}/backend
+
+  web:
+    name: web (${{ matrix.recipe }})
+    needs: discover
+    if: ${{ needs.discover.outputs.webs != '[]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        recipe: ${{ fromJson(needs.discover.outputs.webs) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+        working-directory: ${{ matrix.recipe }}/web
+      - run: npm test
+        working-directory: ${{ matrix.recipe }}/web
+
+  # ---------------------------------------------------------------------------
+  # The ONE stable context branch protection requires. It transitively covers
+  # every current and future recipe job, so the protection rule never changes
+  # as recipes are added. Skipped upstream jobs are fine (nothing to build);
+  # failed or cancelled ones block the merge.
+  # ---------------------------------------------------------------------------
+  ci-gate:
+    name: CI Gate
+    if: always()
+    needs: [validate, discover, backend, web]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every upstream job to have passed or skipped
+        run: |
+          for r in \
+            "${{ needs.validate.result }}" \
+            "${{ needs.discover.result }}" \
+            "${{ needs.backend.result }}" \
+            "${{ needs.web.result }}"; do
+            echo "job result: $r"
+            case "$r" in
+              success|skipped) ;;
+              *) echo "::error::a required job did not pass ($r)"; exit 1 ;;
+            esac
+          done
+          echo "all gates green"
